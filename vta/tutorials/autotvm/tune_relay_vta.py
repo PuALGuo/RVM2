@@ -401,7 +401,7 @@ def tune_and_evaluate(tuning_opt):
 
     # We do not run the tuning in our webpage server since it takes too long.
     # Comment the following line to run it by yourself.
-    return
+    # return
 
     # run tuning tasks
     print("Tuning...")

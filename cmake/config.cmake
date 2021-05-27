@@ -246,7 +246,7 @@ set(USE_ANTLR OFF)
 set(USE_RELAY_DEBUG OFF)
 
 # Whether to build fast VTA simulator driver
-set(USE_VTA_FSIM OFF)
+set(USE_VTA_FSIM ON)
 
 # Whether to build cycle-accurate VTA simulator driver
 set(USE_VTA_TSIM OFF)
@@ -268,4 +268,4 @@ set(USE_HEXAGON_DEVICE OFF)
 set(USE_HEXAGON_SDK /path/to/sdk)
 
 # Whether to use ONNX codegen
-set(USE_TARGET_ONNX OFF)
+set(USE_TARGET_ONNX ON)
