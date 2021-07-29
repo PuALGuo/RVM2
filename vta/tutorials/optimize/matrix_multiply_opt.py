@@ -163,7 +163,7 @@ res = te.compute(output_shape, lambda *i: res_min(*i).astype(env.inp_dtype), nam
 # Create TVM schedule
 s = te.create_schedule(res.op)
 # Let's look at the default TVM schedule
-print(tvm.lower(s, [data, weight, res], simple_mode=True))
+# print(tvm.lower(s, [data, weight, res], simple_mode=True))
 
 ######################################################################
 # Blocking the Computation
@@ -247,9 +247,11 @@ ic_out, ic_inn = s[res_gemm].split(ic, i_block)
 # Reorder axes. We move the ic_out axis all the way out of the GEMM
 # loop to block along the reduction axis
 s[res_gemm].reorder(ic_out, b_inn, oc_inn, ic_inn, b_tns, oc_tns, ic_tns)
-
+oc_inn_out, oc_inn_inn = s[res_gemm].split(oc_inn, 8)
+ic_inn_out, ic_inn_inn = s[res_gemm].split(ic_inn, 8)
+s[res_gemm].reorder(ic_out, b_inn, ic_inn_out, oc_inn_out, ic_inn_inn, oc_inn_inn, b_tns, oc_tns, ic_tns)
 # Let's look at the current TVM schedule after blocking
-print(tvm.lower(s, [data, weight, res], simple_mode=True))
+# print(tvm.lower(s, [data, weight, res], simple_mode=True))
 
 ######################################################################
 # Lowering Copies to DMA Transfers
@@ -290,6 +292,7 @@ s[res].pragma(s[res].op.axis[2], env.dma_copy)
 
 # Apply tensorization over the batch tensor tile axis
 s[res_gemm].tensorize(b_tns, env.gemm)
+# s[res_gemm].tensorize(ic_inn_out, env.gemm)
 
 # Add an ALU pragma over the shift and clipping operations
 s[res_shr].pragma(s[res_shr].op.axis[0], env.alu)
@@ -300,7 +303,7 @@ s[res_max].pragma(s[res_max].op.axis[0], env.alu)
 # loads/stores down to DMA copy intrinsics, and the computation down to
 # VTA compute intrinsics.
 print(vta.lower(s, [data, weight, res], simple_mode=True))
-
+print(tvm.lower(s, [data, weight, res], simple_mode=True))
 ######################################################################
 # TVM Compilation and Verification
 # --------------------------------
@@ -310,6 +313,7 @@ print(vta.lower(s, [data, weight, res], simple_mode=True))
 # ensure correctness.
 
 # Compile the TVM module
+# with vta.build_config(opt_level=3, disabled_pass={"AlterOpLayout"}, debug_flag=31):
 my_gemm = vta.build(s, [data, weight, res], "ext_dev", env.target_host, name="my_gemm")
 temp = utils.tempdir()
 my_gemm.save(temp.relpath("gemm.o"))

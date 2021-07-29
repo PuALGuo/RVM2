@@ -1,22 +1,3 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-
-"""Tuning a single conv2d operator"""
-
 from collections import namedtuple
 import logging
 import os
@@ -62,6 +43,7 @@ resnet_wkls = [
     ("resnet-18.C11", Workload(env.BATCH, 7, 7, 512, 512, 3, 3, 1, 1, 1, 1)),
 ]
 
+from tvm.autotvm.task import TaskExtractEnv
 
 @tvm.te.tag_scope(tag=topi.tag.ELEMWISE)
 def my_clip(x, a_min, a_max):
@@ -72,7 +54,9 @@ def my_clip(x, a_min, a_max):
     x = te.compute(x.shape, lambda *i: tvm.te.max(x(*i), const_min), name="clipB")
     return x
 
+TaskExtractEnv()
 
+@autotvm.template("test/conv2d_packed.vta")
 def conv2d(N, CI, H, W, CO, KH, KW, strides, padding, dilation):
     data_shape = (N // env.BATCH, CI // env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN)
     kernel_shape = (CO // env.BLOCK_OUT, CI // env.BLOCK_IN, KH, KW, env.BLOCK_OUT, env.BLOCK_IN)
@@ -83,27 +67,29 @@ def conv2d(N, CI, H, W, CO, KH, KW, strides, padding, dilation):
     bias = te.placeholder(bias_shape, name="bias", dtype=env.acc_dtype)
 
     with tvm.target.vta():
-        res = topi.nn.conv2d(
-            input=data,
-            filter=kernel,
-            padding=padding,
-            strides=strides,
-            dilation=dilation,
-            layout="NCHW%dn%dc" % (env.BATCH, env.BLOCK_IN),
-            out_dtype=env.acc_dtype,
-        )
+        # res = topi.nn.conv2d(
+        #     input=data,
+        #     filter=kernel,
+        #     padding=padding,
+        #     strides=strides,
+        #     dilation=dilation,
+        #     layout="NCHW%dn%dc" % (env.BATCH, env.BLOCK_IN),
+        #     out_dtype=env.acc_dtype,
+        # )
+        res = vta.top.conv2d_packed(
+                data, kernel, padding, strides, dilation, "NCHW%dn%dc" % (env.BATCH, env.BLOCK_IN), env.acc_dtype)
         res = topi.right_shift(res, env.WGT_WIDTH)
         res = topi.add(res, bias)
         res = my_clip(res, 0, (1 << env.OUT_WIDTH - 1) - 1)
         res = topi.cast(res, env.out_dtype)
 
-    if tvm.target.Target.current().device_name == "vta":
-        s = topi.generic.schedule_conv2d_nchw([res])
-    else:
-        s = te.create_schedule([res.op])
+    # if tvm.target.Target.current().device_name == "vta":
+    #     s = topi.generic.schedule_conv2d_nchw([res]) ## 好像直接create_schedule就行了吧
+    # else:
+    #     s = te.create_schedule([res.op])
+    s = vta.top.schedule_conv2d_packed
 
     return s, [data, kernel, bias, res]
-
 
 if __name__ == "__main__":
 
@@ -142,7 +128,7 @@ if __name__ == "__main__":
 
         # Create task
         task = autotvm.task.create(
-            conv2d,
+            "test/conv2d_packed.vta",
             args=(N, CI, H, W, CO, KH, KW, strides, padding, dilation),
             target=tvm.target.vta(),
             target_host=env.target_host

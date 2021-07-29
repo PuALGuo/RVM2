@@ -16,8 +16,10 @@
 # under the License.
 """Additional Transformation Passes. for VTA"""
 # pylint: disable=len-as-condition, no-else-return, unused-argument, invalid-name
+from os import isatty
 import tvm
 from tvm import te
+from tvm.tir import stmt_functor
 from tvm.topi import utils
 
 from .environment import get_env
@@ -1077,4 +1079,86 @@ def InjectALUIntrin():
 
     return tvm.tir.transform.prim_func_pass(
         _ftransform, opt_level=0, name="tir.vta.InjectALUIntrin"
+    )
+
+def InjectDetectIntrin():
+    def _ftransform(func, mod, ctx):
+        def _inject_detect(body):
+            stmt = body
+            # if not isinstance(stmt, tvm.tir.For):
+            #     return None, body, None
+            
+            # loop_var = stmt.loop_var
+            related = [False]
+            builtin_uop_push = tvm.ir.Op.get("tir.vta.uop_push")
+            
+            def _pre_order(op):
+                assert isinstance(op, tvm.tir.For)
+                loop_var = op.loop_var
+                def _post_order(op):
+                    assert isinstance(op, tvm.tir.Call)
+                    base_args = 2
+                    # if isinstance(op.body, tvm.tir.Call):
+                    if op.op.same_as(builtin_uop_push):
+                        # related = False
+                        for i in range(2,3): ## wgt 是 2
+                            m = tvm.arith.detect_linear_equation(op.args[i + base_args], [loop_var])
+                            if not (m[0] == 0):
+                                related[0] = True
+                        if related[0]:
+                            begins = [tvm.tir.call_intrin("int32",builtin_uop_push,0,0,0,0,0,0,0,0,)]
+                            return tvm.tir.stmt_seq(*(begins + [op]))
+                            # return None
+                        else:
+                            return op     
+                    if op.op.name not in ("tir.vta.command_handle", "tir.tvm_thread_context"):
+                        raise RuntimeError("unexpected op %s" % op)
+                    return op
+
+                if not isinstance(op.body, tvm.tir.For): 
+                    '''
+                    用一种naive的方法,如果时最内层循环则认为可能利用detect
+                    这个逻辑会有问题,如果出现循环嵌套,然后循环内不止一个控制块就崩了
+                    准确的check应该遍历内部所有vta.uop_push
+                    '''
+                    loops = tvm.tir.stmt_functor.ir_transform(op.body, None, _post_order, ["tir.Call"]) 
+                    begins = [tvm.tir.call_intrin("int32",builtin_uop_push,0,0,127,127,127,0,0,0,)]
+                    ret = tvm.tir.For(op.loop_var, op.min, op.extent, op.for_type, op.device_api,tvm.tir.stmt_seq(*(begins + [loops])))
+                else:
+                    ret = op
+                return ret
+
+            ret = tvm.tir.stmt_functor.ir_transform(stmt, None, _pre_order, ["tir.For"]) 
+            # preorder做完转换后不再迭代,postorder转换后继续迭代
+
+            if not related[0]:
+
+                return ret
+            
+            raise ValueError("Failed to inject the Detect instructions..")
+
+        def _do_fold(stmt):
+            env = get_env()
+            if (
+                stmt.attr_key == "coproc_uop_scope"
+                and isinstance(stmt.value, tvm.tir.StringImm)
+                and stmt.value.value == env.dev.vta_push_uop.value 
+            ):
+            #表明接下来是vta_push_uop相关 ==2表示计算阶段
+                body = stmt.body
+                try:
+                    body = _inject_detect(body)
+                except ValueError:
+                    pass
+                if body == stmt.body:
+                    return stmt
+                return tvm.tir.AttrStmt(stmt.node, stmt.attr_key, stmt.value, body)
+            return None
+
+        return func.with_body(
+            tvm.tir.stmt_functor.ir_transform(func.body, _do_fold, None, ["tir.AttrStmt"])
+        )
+    
+    return tvm.tir.transform.prim_func_pass(
+        _ftransform, opt_level=0, name="tir.vta.InjectDetectIntrin"
     )

@@ -56,6 +56,9 @@ from tvm.contrib import graph_runtime, utils, download
 from tvm.contrib.debugger import debug_runtime
 from tvm.relay import transform
 
+import torchvision
+import torch
+
 import vta
 from vta.testing import simulator
 from vta.top import graph_pack
@@ -76,32 +79,19 @@ env = vta.get_env()
 device = "vta"
 target = env.target if device == "vta" else env.target_vta_cpu
 
-# Dictionary lookup for when to start/end bit packing
-pack_dict = {
-    "resnet18_v1": ["nn.max_pool2d", "nn.global_avg_pool2d"],
-    "resnet34_v1": ["nn.max_pool2d", "nn.global_avg_pool2d"],
-    "resnet18_v2": ["nn.max_pool2d", "nn.global_avg_pool2d"],
-    "resnet34_v2": ["nn.max_pool2d", "nn.global_avg_pool2d"],
-    "resnet50_v2": ["nn.max_pool2d", "nn.global_avg_pool2d"],
-    "resnet101_v2": ["nn.max_pool2d", "nn.global_avg_pool2d"],
-    "vgg11":["nn.max_pool2d", "nn.dense"]
-}
-
-# Name of Gluon model to compile
-# The ``start_pack`` and ``stop_pack`` labels indicate where
-# to start and end the graph packing relay pass: in other words
-# where to start and finish offloading to VTA.
-
-# model = "resnet18_v1"
-model = "vgg11"
-
-assert model in pack_dict
-
 ######################################################################
 # Obtain an execution remote
 # --------------------------
 # When target is 'pynq', reconfigure FPGA and runtime.
 # Otherwise, if target is 'sim', execute locally.
+
+# model_name = "resnet18"
+model_name = "vgg16"
+model = getattr(torchvision.models, model_name)(pretrained=True)
+model = model.eval()
+input_shape = [1, 3, 224, 224]
+input_data = torch.randn(input_shape)
+scripted_model = torch.jit.trace(model, input_data).eval()
 
 if env.TARGET not in ["sim", "tsim"]:
 
@@ -158,21 +148,9 @@ ctx = remote.ext_dev(0) if device == "vta" else remote.cpu(0)
 with autotvm.tophub.context(target):
 
     # Populate the shape and data type dictionary for ImageNet classifier input
-    dtype_dict = {"data": "float32"}
-    shape_dict = {"data": (env.BATCH, 3, 224, 224)}
-
-    # Get off the shelf gluon model, and convert to relay
-    gluon_model = vision.get_model(model, pretrained=True)
-
-    # Measure build start time
-    build_start = time.time()
-
-    # Start front end compilation
-    mod, params = relay.frontend.from_mxnet(gluon_model, shape_dict)
-
-    # Update shape and type dictionary
-    shape_dict.update({k: v.shape for k, v in params.items()})
-    dtype_dict.update({k: str(v.dtype) for k, v in params.items()})
+    input_name = "input0"
+    shape_list = [(input_name, (1,3,224,224))]
+    mod, params = relay.frontend.from_pytorch(scripted_model, shape_list)
 
     if target.device_name == "vta":
         # Perform quantization in Relay
@@ -187,8 +165,10 @@ with autotvm.tophub.context(target):
                 env.BATCH,
                 env.BLOCK_OUT,
                 env.WGT_WIDTH,
-                start_name=pack_dict[model][0],
-                stop_name=pack_dict[model][1],
+                # start_name="nn.max_pool2d", 
+                # stop_name="nn.adaptive_avg_pool2d",
+                start_name = "nn.max_pool2d",
+                stop_name="nn.adaptive_avg_pool2d"
             )
     else:
         relay_prog = mod["main"]
@@ -202,10 +182,6 @@ with autotvm.tophub.context(target):
     else:
         with vta.build_config(opt_level=3, disabled_pass={"AlterOpLayout"}):
             lib = relay.build(relay_prog, target=target, params=params, target_host=env.target_host)
-
-    # Measure Relay build time
-    build_time = time.time() - build_start
-    print(model + " inference graph built in {0:.2f}s!".format(build_time))
 
     # Send the inference library over to the remote RPC server
     temp = utils.tempdir()
@@ -245,7 +221,7 @@ image = image[np.newaxis, :]
 image = np.repeat(image, env.BATCH, axis=0)
 
 # Set the network parameters and inputs
-m.set_input("data", image)
+m.set_input(input_name, image)
 
 # Perform inference and gather execution statistics
 # More on: :py:method:`tvm.runtime.Module.time_evaluator`
