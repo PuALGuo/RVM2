@@ -1,0 +1,18 @@
+resnet18_v1 inference graph built in 14.05s!
+resnet34_v1 inference graph built in 18.28s!
+resnet50_v1 inference graph built in 20.27s!
+resnet101_v1 inference graph built in 25.91s!
+resnet152_v1 inference graph built in 32.08s!
+
+alexnet inference graph built in 6.77s!   
+
+inception编译失败了
+
+mobilenet1.0 inference graph built in 15.26s!
+
+vgg11 inference graph built in 12.77s!
+vgg13 inference graph built in 13.21s!
+vgg16 inference graph built in 13.97s!
+vgg19 inference graph built in 14.42s!
+
+squeezenet1.0 inference graph built in 11.23s!
